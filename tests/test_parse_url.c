@@ -75,33 +75,36 @@ static void parse_success(const char *url,
                           const char *vhost)
 {
   char *s = strdup(url);
-  struct amqp_connection_info ci;
+  struct amqp_uri *uri = alloc_amqp_uri();
   int res;
 
-  res = amqp_parse_url(s, &ci);
-  if (res) {
+  res = amqp_uri_parse(uri,s);
+  if (!res) {
     fprintf(stderr,
             "Expected to successfully parse URL, but didn't: %s (%s)\n",
             url, amqp_error_string2(res));
     abort();
   }
 
-  match_string("user", user, ci.user);
-  match_string("password", password, ci.password);
-  match_string("host", host, ci.host);
-  match_int("port", port, ci.port);
-  match_string("vhost", vhost, ci.vhost);
+  match_string("user", user, uri->user);
+  match_string("password", password, uri->password);
+
+  host_port_t *hp = (host_port_t *)uri->host_port_array.elts;
+  match_string("host", host, hp->host);
+  match_int("port", port, hp->port);
+  match_string("vhost", vhost, uri->vhost);
 
   free(s);
+  free_amqp_uri(uri);
 }
 
 static void parse_fail(const char *url)
 {
   char *s = strdup(url);
-  struct amqp_connection_info ci;
+  struct amqp_uri *uri = alloc_amqp_uri();
 
-  amqp_default_connection_info(&ci);
-  if (amqp_parse_url(s, &ci) >= 0) {
+
+  if (amqp_uri_parse(uri,s) == 0) {
     fprintf(stderr,
             "Expected to fail parsing URL, but didn't: %s\n",
             url);
@@ -109,6 +112,7 @@ static void parse_fail(const char *url)
   }
 
   free(s);
+  free_amqp_uri(uri);
 }
 
 int main(void)

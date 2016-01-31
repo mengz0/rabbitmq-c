@@ -2263,67 +2263,66 @@ void
 AMQP_CALL amqp_destroy_envelope(amqp_envelope_t *envelope);
 
 
-/**
- * Parameters used to connect to the RabbitMQ broker
- *
- * \since v0.2
- */
-struct amqp_connection_info {
-  char *user;                 /**< the username to authenticate with the broker, default on most broker is 'guest' */
-  char *password;             /**< the password to authenticate with the broker, default on most brokers is 'guest' */
-  char *host;                 /**< the hostname of the broker */
-  char *vhost;                /**< the virtual host on the broker to connect to, a good default is "/" */
-  int port;                   /**< the port that the broker is listening on, default on most brokers is 5672 */
-  amqp_boolean_t ssl;
-};
+typedef void (*free_elt_func_t)(void *arg);
 
-/**
- * Initialze an amqp_connection_info to default values
- *
- * The default values are:
- * - user: "guest"
- * - password: "guest"
- * - host: "localhost"
- * - vhost: "/"
- * - port: 5672
- *
- * \param [out] parsed the connection info to set defaults on
- *
- * \since v0.2
- */
+typedef struct {
+        void        *elts;
+        unsigned    nelts;
+        unsigned    size;
+        unsigned    nalloc;
+        free_elt_func_t free;
+} array_t;
+
+
 AMQP_PUBLIC_FUNCTION
 void
-AMQP_CALL amqp_default_connection_info(struct amqp_connection_info *parsed);
+AMQP_CALL array_init(array_t *array, unsigned  n, unsigned size, free_elt_func_t);
 
-/**
- * Parse a connection URL
- *
- * An amqp connection url takes the form:
- *
- * amqp://[$USERNAME[:$PASSWORD]\@]$HOST[:$PORT]/[$VHOST]
- *
- * Examples:
- *  amqp://guest:guest\@localhost:5672//
- *  amqp://guest:guest\@localhost/myvhost
- *
- *  Any missing parts of the URL will be set to the defaults specified in
- *  amqp_default_connection_info. For amqps: URLs the default port will be set
- *  to 5671 instead of 5672 for non-SSL URLs.
- *
- * \note This function modifies url parameter.
- *
- * \param [in] url URI to parse, note that this parameter is modified by the
- *             function.
- * \param [out] parsed the connection info gleaned from the URI. The char*
- *              members will point to parts of the url input parameter.
- *              Memory management will depend on how the url is allocated.
- * \returns AMQP_STATUS_OK on success, AMQP_STATUS_BAD_URL on failure
- *
- * \since v0.2
- */
+AMQP_PUBLIC_FUNCTION
+void
+AMQP_CALL array_destroy(array_t *a);
+
+AMQP_PUBLIC_FUNCTION
+void *
+AMQP_CALL array_push(array_t *a);
+
+#define AMQP_DEFAULT_PORT     5672
+#define AMQP_DEFAULT_SSL_PORT 5671
+
+typedef struct host_port {
+	char             *host;
+	unsigned short     port;
+} host_port_t;
+
+typedef struct amqp_uri{
+	char    *user;
+	char    *password;
+	array_t host_port_array;
+	char    *vhost;
+	unsigned ssl;
+	char    *cacert_file;
+	char    *key_file;
+	char    *cert_file;
+	char    *exchange;
+	char    *queue_name;
+	unsigned heartbeat_interval;
+	unsigned ssl_verify;
+	unsigned switch_delay;
+	unsigned connect_timeout;
+} amqp_uri_t;
+
+
+AMQP_PUBLIC_FUNCTION
+amqp_uri_t *
+AMQP_CALL alloc_amqp_uri(void);
+
+AMQP_PUBLIC_FUNCTION
+void
+AMQP_CALL free_amqp_uri(amqp_uri_t *uri);
+
 AMQP_PUBLIC_FUNCTION
 int
-AMQP_CALL amqp_parse_url(char *url, struct amqp_connection_info *parsed);
+AMQP_CALL amqp_uri_parse(amqp_uri_t *uri, const char *str);
 
 /* socket API */
 

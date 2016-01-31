@@ -167,7 +167,6 @@ void die_rpc(amqp_rpc_reply_t r, const char *fmt, ...)
 
 static char *amqp_url;
 static char *amqp_server;
-static int amqp_port = -1;
 static char *amqp_vhost;
 static char *amqp_username;
 static char *amqp_password;
@@ -188,10 +187,6 @@ struct poptOption connect_options[] = {
   {
     "server", 's', POPT_ARG_STRING, &amqp_server, 0,
     "the AMQP server to connect to", "hostname"
-  },
-  {
-    "port", 0, POPT_ARG_INT, &amqp_port, 0,
-    "the port to connect on", "port"
   },
   {
     "vhost", 0, POPT_ARG_STRING, &amqp_vhost, 0,
@@ -230,24 +225,15 @@ struct poptOption connect_options[] = {
   { NULL, '\0', 0, NULL, 0, NULL, NULL }
 };
 
-static void init_connection_info(struct amqp_connection_info *ci)
+static void init_connection_info(struct amqp_uri *ci)
 {
-  ci->user = NULL;
-  ci->password = NULL;
-  ci->host = NULL;
-  ci->port = -1;
-  ci->vhost = NULL;
-  ci->user = NULL;
-
-  amqp_default_connection_info(ci);
-
   if (amqp_url)
-    die_amqp_error(amqp_parse_url(strdup(amqp_url), ci),
+	  die_amqp_error(amqp_uri_parse(ci,amqp_url),
                    "Parsing URL '%s'", amqp_url);
 
   if (amqp_server) {
     char *colon;
-    if (ci->host)
+    if (ci->host_port_array.nelts > 0)
       die("both --server and --url options specify"
           " server host");
 
@@ -265,20 +251,14 @@ static void init_connection_info(struct amqp_connection_info *ci)
               " --server is deprecated\n");
 
       host_len = colon - amqp_server;
-      ci->host = malloc(host_len + 1);
-      memcpy(ci->host, amqp_server, host_len);
-      ci->host[host_len] = 0;
+      host_port_t *hp = array_push(&ci->host_port_array);
+      hp->host = malloc(host_len + 1);
+      memcpy(hp->host, amqp_server, host_len);
+      hp->host[host_len] = 0;
 
-      if (ci->port >= 0)
-        die("both --server and --url options specify"
-            " server port");
-      if (amqp_port >= 0)
-        die("both --server and --port options specify"
-            " server port");
-
-      ci->port = strtol(colon+1, &port_end, 10);
-      if (ci->port < 0
-          || ci->port > 65535
+      hp->port = strtol(colon+1, &port_end, 10);
+      if (hp->port < 0
+          || hp->port > 65535
           || port_end == colon+1
           || *port_end != 0)
         die("bad server port number in '%s'",
@@ -291,14 +271,6 @@ static void init_connection_info(struct amqp_connection_info *ci)
           " but the --server option does not");
     }
 #endif
-  }
-
-  if (amqp_port >= 0) {
-    if (ci->port >= 0)
-      die("both --port and --url options specify"
-          " server port");
-
-    ci->port = amqp_port;
   }
 
   if (amqp_username) {
@@ -334,12 +306,12 @@ amqp_connection_state_t make_connection(void)
 {
   int status;
   amqp_socket_t *socket = NULL;
-  struct amqp_connection_info ci;
+  struct amqp_uri *uri = alloc_amqp_uri();
   amqp_connection_state_t conn;
 
-  init_connection_info(&ci);
+  init_connection_info(uri);
   conn = amqp_new_connection();
-  if (ci.ssl) {
+  if (uri->ssl) {
 #ifdef WITH_SSL
     socket = amqp_ssl_socket_new(conn);
     if (!socket) {
@@ -360,17 +332,19 @@ amqp_connection_state_t make_connection(void)
       die("creating TCP socket (out of memory)");
     }
   }
-  status = amqp_socket_open(socket, ci.host, ci.port);
+  host_port_t * hp = ((host_port_t *)uri->host_port_array.elts);
+  status = amqp_socket_open(socket, hp->host, hp->port);
   if (status) {
-    die("opening socket to %s:%d", ci.host, ci.port);
+    die("opening socket to %s:%d", hp->host, hp->port);
   }
-  die_rpc(amqp_login(conn, ci.vhost, 0, 131072, amqp_heartbeat,
+  die_rpc(amqp_login(conn, uri->vhost, 0, 131072, amqp_heartbeat,
                      AMQP_SASL_METHOD_PLAIN,
-                     ci.user, ci.password),
+                     uri->user, uri->password),
           "logging in to AMQP server");
   if (!amqp_channel_open(conn, 1)) {
     die_rpc(amqp_get_rpc_reply(conn), "opening channel");
   }
+  free_amqp_uri(uri);
   return conn;
 }
 

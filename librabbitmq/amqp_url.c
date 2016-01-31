@@ -47,178 +47,397 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
-void amqp_default_connection_info(struct amqp_connection_info *ci)
+#define TRUE     1
+#define FALSE    0
+
+void
+array_init(array_t *array, unsigned n, unsigned size,free_elt_func_t free_func)
 {
-  /* Apply defaults */
-  ci->user = "guest";
-  ci->password = "guest";
-  ci->host = "localhost";
-  ci->port = 5672;
-  ci->vhost = "/";
-  ci->ssl = 0;
+        array->nelts = 0;
+        array->size = size;
+        array->nalloc = n;
+        array->free = free_func;
+        array->elts = calloc(size, n);
 }
 
-/* Scan for the next delimiter, handling percent-encodings on the way. */
-static char find_delim(char **pp, int colon_and_at_sign_are_delims)
+
+void
+array_destroy(array_t *a)
 {
-  char *from = *pp;
-  char *to = from;
+	unsigned i = 0;
+        if(a->free){
+                for(; i < a->nelts; ++i)
+                        (*a->free)((unsigned char *)a->elts + i * a->size);
+        }
 
-  for (;;) {
-    char ch = *from++;
-
-    switch (ch) {
-    case ':':
-    case '@':
-      if (!colon_and_at_sign_are_delims) {
-        *to++ = ch;
-        break;
-      }
-
-      /* fall through */
-    case 0:
-    case '/':
-    case '?':
-    case '#':
-    case '[':
-    case ']':
-      *to = 0;
-      *pp = from;
-      return ch;
-
-    case '%': {
-      unsigned int val;
-      int chars;
-      int res = sscanf(from, "%2x%n", &val, &chars);
-
-      if (res == EOF || res < 1 || chars != 2)
-        /* Return a surprising delimiter to
-           force an error. */
-      {
-        return '%';
-      }
-
-      *to++ = val;
-      from += 2;
-      break;
-    }
-
-    default:
-      *to++ = ch;
-      break;
-    }
-  }
+        free(a->elts);
 }
 
-/* Parse an AMQP URL into its component parts. */
-int amqp_parse_url(char *url, struct amqp_connection_info *parsed)
+
+void *
+array_push(array_t *a)
 {
-  int res = AMQP_STATUS_BAD_URL;
-  char delim;
-  char *start;
-  char *host;
-  char *port = NULL;
+        void        *elt;
 
-  amqp_default_connection_info(parsed);
+        if (a->nelts == a->nalloc) {
+                a->nalloc <<= 1;
+                a->elts = realloc(a->elts,a->size * a->nalloc);
+        }
 
-  /* check the prefix */
-  if (!strncmp(url, "amqp://", 7)) {
-    /* do nothing */
-  } else if (!strncmp(url, "amqps://", 8)) {
-    parsed->port = 5671;
-    parsed->ssl = 1;
-  } else {
-    goto out;
-  }
-
-  host = start = url += (parsed->ssl ? 8 : 7);
-  delim = find_delim(&url, 1);
-
-  if (delim == ':') {
-    /* The colon could be introducing the port or the
-       password part of the userinfo.  We don't know yet,
-       so stash the preceding component. */
-    port = start = url;
-    delim = find_delim(&url, 1);
-  }
-
-  if (delim == '@') {
-    /* What might have been the host and port were in fact
-       the username and password */
-    parsed->user = host;
-    if (port) {
-      parsed->password = port;
-    }
-
-    port = NULL;
-    host = start = url;
-    delim = find_delim(&url, 1);
-  }
-
-  if (delim == '[') {
-    /* IPv6 address.  The bracket should be the first
-       character in the host. */
-    if (host != start || *host != 0) {
-      goto out;
-    }
-
-    start = url;
-    delim = find_delim(&url, 0);
-
-    if (delim != ']') {
-      goto out;
-    }
-
-    parsed->host = start;
-    start = url;
-    delim = find_delim(&url, 1);
-
-    /* Closing bracket should be the last character in the
-       host. */
-    if (*start != 0) {
-      goto out;
-    }
-  } else {
-    /* If we haven't seen the host yet, this is it. */
-    if (*host != 0) {
-      parsed->host = host;
-    }
-  }
-
-  if (delim == ':') {
-    port = start = url;
-    delim = find_delim(&url, 1);
-  }
-
-  if (port) {
-    char *end;
-    long portnum = strtol(port, &end, 10);
-
-    if (port == end || *end != 0 || portnum < 0 || portnum > 65535) {
-      goto out;
-    }
-
-    parsed->port = portnum;
-  }
-
-  if (delim == '/') {
-    start = url;
-    delim = find_delim(&url, 1);
-
-    if (delim != 0) {
-      goto out;
-    }
-
-    parsed->vhost = start;
-    res = AMQP_STATUS_OK;
-  } else if (delim == 0) {
-    res = AMQP_STATUS_OK;
-  }
-
-  /* Any other delimiter is bad, and we will return
-     AMQP_STATUS_BAD_AMQP_URL. */
-
-out:
-  return res;
+        elt = (unsigned char *) a->elts + a->size * a->nelts;
+        a->nelts++;
+        return elt;
 }
+
+
+static void
+free_host_port(void *v)
+{
+	host_port_t *hp = v;
+	free(hp->host);
+}
+
+void
+free_amqp_uri(struct amqp_uri *uri)
+{
+	if(!uri)
+		return;
+
+	free(uri->user);
+	free(uri->password);
+	array_destroy(&uri->host_port_array);
+	free(uri->vhost);
+	free(uri->cacert_file);
+	free(uri->key_file);
+	free(uri->cert_file);
+	free(uri->exchange);
+	free(uri->queue_name);
+	free(uri);
+}
+
+amqp_uri_t *
+alloc_amqp_uri(void)
+{
+	amqp_uri_t *uri = calloc(1,sizeof(amqp_uri_t));
+	array_init(&uri->host_port_array,1,sizeof(host_port_t),free_host_port);
+	uri->heartbeat_interval = 1;
+	uri->switch_delay = 1;
+	uri->connect_timeout = 30;
+	return uri;
+}
+
+static char *
+__amqp_uri_unescape (const char *string)
+{
+	array_t array;
+	char *c = NULL;
+	unsigned int hex = 0;
+	const char *curr = NULL, *end = NULL;
+	size_t len;
+
+	if(!string)
+		return NULL;
+
+	len = strlen(string);
+	curr = string;
+	end = curr + len;
+	array_init(&array,len,sizeof(char),NULL);
+	for (; *curr; ++curr) {
+
+		switch (*curr) {
+		case '%':
+			if (((end - curr) < 2) ||
+				!isxdigit(curr[1]) ||
+				!isxdigit(curr[2]) ||
+				(1 != sscanf(&curr[1], "%02x", &hex)) ||
+				!isprint(hex)) {
+				array_destroy(&array);
+				return NULL;
+			}
+			c = array_push(&array);
+			*c = hex;
+			curr += 2;
+			break;
+		default:
+			c = array_push(&array);
+			*c = *curr;
+			break;
+		}
+	}
+
+	c = array_push(&array);
+	*c = '\0';
+	return array.elts;
+}
+
+
+static void
+amqp_uri_unescape (char **str)
+{
+	if(!str)
+		return;
+
+	char *tmp = *str;
+	if(!tmp)
+		return;
+
+	//need unescape?
+	if (strchr(tmp,'%')) {
+		*str = __amqp_uri_unescape(tmp);
+		free(tmp);
+	}
+}
+
+static char *
+seek_stop (const char *str, char stop, const char **end)
+{
+	const char *it = str;
+	if(!it)
+		return NULL;
+
+	for ( ; *it; ++it)
+		if (*it == stop) {
+			*end = it;
+			return strndup(str, it - str);
+		}
+	return NULL;
+}
+
+
+static int
+amqp_uri_scheme (amqp_uri_t *uri, const char *str, const char **end)
+{
+
+	if (!strncmp(str, "amqp://", 7)){
+		*end = str + 7;
+		uri->ssl = 0;
+		return TRUE;
+	}
+	
+	if(!strncmp(str,"amqps://",8)) {
+		*end = str + 8;
+		uri->ssl = 1;
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+
+static void
+amqp_uri_userpass (amqp_uri_t *uri, const char *str, const char **end)
+{
+	const char *end_userpass;
+	const char *end_user;
+	char *s;
+
+	if ((s = seek_stop(str, '@', &end_userpass))) {
+		if ((uri->user = seek_stop(s, ':', &end_user))) {
+			uri->password = strdup(end_user + 1);
+		} else {
+			uri->user = strndup(str, end_userpass - str);
+			uri->password = NULL;
+		}
+		amqp_uri_unescape(&uri->user);
+		amqp_uri_unescape(&uri->password);
+		*end = end_userpass + 1;
+		free(s);
+	} else {
+		uri->user     = strdup("guest");
+		uri->password = strdup("guest");
+	}
+}
+
+static int
+amqp_uri_host (amqp_uri_t *uri, const char *str)
+{
+	unsigned short port;
+	const char *end_host;
+	char *hostname = NULL;
+
+	if ((hostname = seek_stop(str, ':', &end_host))) {
+		++end_host;
+		if (!isdigit(*end_host)) {
+			free(hostname);
+			return FALSE;
+		}
+		sscanf (end_host, "%hu", &port);
+	} else {
+		hostname = strdup(str);
+		port = uri->ssl ? AMQP_DEFAULT_SSL_PORT : AMQP_DEFAULT_PORT;
+	}
+
+	amqp_uri_unescape(&hostname);
+	host_port_t *hp = array_push(&uri->host_port_array);
+	hp->host = hostname;
+	hp->port = port;
+	return TRUE;
+}
+
+static int
+amqp_uri_hosts (amqp_uri_t *uri, const char *str,const char **end)
+{
+	int result = FALSE;
+	const char *end_hostport;
+	char *s;
+
+loop__:
+	if ((s = seek_stop(str, ',', &end_hostport))) {
+		if (!amqp_uri_host(uri, s)) {
+			free(s);
+			return FALSE;
+		}
+		free(s);
+		str = end_hostport + 1;
+		result = TRUE;
+		goto loop__;
+	} else if ((s = seek_stop(str, '/', &end_hostport)) ||
+		(s = seek_stop(str, '?', &end_hostport))) {
+		if (!amqp_uri_host(uri, s)) {
+			free(s);
+			return FALSE;
+		}
+		free(s);
+		*end = end_hostport;
+		return TRUE;
+	} else if (*str) {
+		if (!amqp_uri_host(uri, str)) {
+			return FALSE;
+		}
+		*end = str + strlen(str);
+		return TRUE;
+	}
+
+	return result;
+}
+
+
+static int
+amqp_uri_option (amqp_uri_t *uri,const char *str)
+{
+	const char *end_key;
+	char *key;
+	char *value;
+
+	if (!(key = seek_stop(str, '=', &end_key))) {
+		return FALSE;
+	}
+
+	int result = TRUE;
+	value = strdup(end_key + 1);
+	amqp_uri_unescape(&value);
+	if (!strcasecmp(key, "cacertfile")){
+		uri->cacert_file = value;  
+	}else if(!strcasecmp(key, "keyfile")){
+		uri->key_file = value;
+	}else if(!strcasecmp(key, "certfile")){
+		uri->cert_file = value;
+	}else if(!strcasecmp(key, "exchange")){
+		uri->exchange = value;
+	}else if(!strcasecmp(key, "queuename")){
+		uri->queue_name = value;
+	}else if(!strcasecmp(key, "heartbeat")){
+		uri->heartbeat_interval = atoi(value);
+		free(value);
+	}else if(!strcasecmp(key, "switch_delay")){
+		uri->switch_delay = atoi(value);
+		free(value);
+	}else if(!strcasecmp(key, "connect_timeout")){
+		uri->connect_timeout = atoi(value);
+		free(value);
+	}else if(!strcasecmp(key, "ssl_verify")){
+		uri->ssl_verify = !strcasecmp(value,"on");
+		free(value);
+	}else {
+		free(value);
+		result = FALSE;
+	}
+	free(key);
+	return result;
+}
+
+
+static int
+amqp_uri_options (amqp_uri_t *uri, const char *str)
+{
+	const char *end_option;
+	char *option;
+        while ((option = seek_stop(str, '&', &end_option))) {
+		if (!amqp_uri_option(uri, option)) {
+			free(option);
+			return FALSE;
+		}
+		free(option);
+		str = end_option + 1;
+	}
+
+	if (*str && !amqp_uri_option(uri, str)) {
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static int
+amqp_uri_vhost(amqp_uri_t *uri,const char *str,const char **end)
+{
+	const char *end_vhost;
+	if ((uri->vhost = seek_stop(str, '?', &end_vhost))) {
+		*end = end_vhost;
+	} else if (*str) {
+		uri->vhost = strdup(str);
+		*end = str + strlen(str);
+	}
+	amqp_uri_unescape(&uri->vhost);
+	return TRUE;
+}
+
+int
+amqp_uri_parse (amqp_uri_t *uri, const char *str)
+{
+	if(!uri)
+		return FALSE;
+
+	//1. scheme
+	if (!amqp_uri_scheme(uri, str, &str)) {
+		return FALSE;
+	}
+
+	if (!*str) {
+		return FALSE;
+	}
+
+	//2. username/password
+	amqp_uri_userpass(uri, str, &str);
+
+	//3. hosts
+	if (!*str || !amqp_uri_hosts(uri, str, &str)) {
+		return FALSE;
+	}
+
+	switch (*str) {
+	case '/':
+		//4. vhost
+		if (*str && !amqp_uri_vhost(uri, str, &str)) {
+			return FALSE;
+		}
+		if (!*str) {
+			break;
+		}
+		/* fall through */
+	case '?':
+		str++;
+		//5. options
+		if (*str && !amqp_uri_options(uri, str)) {
+			return FALSE;
+		}
+		break;
+	default:
+		break;
+	}
+
+	return TRUE;
+}
+
+
