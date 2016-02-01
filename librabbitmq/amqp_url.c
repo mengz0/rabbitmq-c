@@ -124,7 +124,7 @@ alloc_amqp_uri(void)
 	array_init(&uri->host_port_array,1,sizeof(host_port_t),free_host_port);
 	uri->heartbeat_interval = 1;
 	uri->switch_delay = 1;
-	uri->connect_timeout = 30;
+	uri->connect_timeout = 5;
 	return uri;
 }
 
